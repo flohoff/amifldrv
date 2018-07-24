@@ -12,6 +12,7 @@
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/version.h>
+#include <linux/uaccess.h>
 
 #define LINUX_PRE_2_6   (LINUX_VERSION_CODE <  KERNEL_VERSION(2, 6, 0))
 #define LINUX_POST_2_6  (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0))
@@ -86,6 +87,121 @@ int AMI_chrdrv_release(struct inode *inode, struct file *file)
 	return (0);
 }
 
+int AMI_chrdrv_ioctl_alloc(unsigned long arg) {
+	unsigned long virt_addr;
+	AMIFL_alloc_params arg_kernel_space;
+
+	if (kcount >= 128) {
+		return -EINVAL;
+	}
+
+	kmalloc_ptr = NULL;
+
+	if (!arg || kmalloc_ptr) {
+		return -EINVAL;
+	}
+
+	copy_from_user((void *) &arg_kernel_space, (void *) arg,
+		       sizeof(AMIFL_alloc_params));
+
+	if (arg_kernel_space.size > 128 * 1024) {
+		return -EINVAL;
+	}
+
+	kmalloc_len = ((arg_kernel_space.size + PAGE_SIZE - 1) & PAGE_MASK);
+	kmalloc_ptr = kmalloc((kmalloc_len + 2 * PAGE_SIZE), GFP_DMA | GFP_KERNEL);
+	kmalloc_area =
+	    (int *) (((unsigned long) kmalloc_ptr + PAGE_SIZE - 1) & PAGE_MASK);
+
+	for (virt_addr = (unsigned long) kmalloc_area;
+	     virt_addr < (unsigned long) kmalloc_area + kmalloc_len;
+	     virt_addr += PAGE_SIZE) {
+		mem_map_reserve(virt_to_page(virt_addr));
+	}
+
+	{
+		int i;
+		for (i = 0; i < (kmalloc_len / sizeof(int)); ++i) {
+			kmalloc_area[i] = 0xAFD00000 + i;
+		}
+	}
+
+	kmalloc_drv[kcount].size = arg_kernel_space.size;
+	kmalloc_drv[kcount].kmallocptr = kmalloc_ptr;
+	kmalloc_drv[kcount].kvirtlen = kmalloc_len;
+	kmalloc_drv[kcount].kvirtadd = kmalloc_area;
+	kmalloc_drv[kcount].kphysadd =
+	    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
+	++kcount;
+
+	arg_kernel_space.kvirtadd = kmalloc_area;
+	arg_kernel_space.kphysadd =
+	    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
+
+	copy_to_user((void *) arg, (void *) &arg_kernel_space,
+		     sizeof(AMIFL_alloc_params));
+
+	return 0;
+}
+
+int AMI_chrdrv_ioctl_free(unsigned long arg) {
+	unsigned long virt_addr;
+	AMIFL_alloc_params arg_kernel_space;
+	int isearch = 0;
+
+	copy_from_user((void *) &arg_kernel_space, (void *) arg,
+		       sizeof(AMIFL_alloc_params));
+
+	if (kcount > 0) {
+		for (isearch = 0; isearch < kcount; isearch++) {
+			if (kmalloc_drv[isearch].kphysadd ==
+			    arg_kernel_space.kphysadd)
+				break;
+		}
+		if (isearch >= kcount)
+			return 0;
+		kmalloc_ptr = kmalloc_drv[isearch].kmallocptr;
+		kmalloc_area = kmalloc_drv[isearch].kvirtadd;
+		kmalloc_len = kmalloc_drv[isearch].kvirtlen;
+	} else
+		return 0;
+	if (kmalloc_ptr) {
+		for (virt_addr = (unsigned long) kmalloc_area;
+		     virt_addr < (unsigned long) kmalloc_area + kmalloc_len;
+		     virt_addr += PAGE_SIZE) {
+			mem_map_unreserve(virt_to_page(virt_addr));
+		}
+
+		if (kmalloc_ptr) {
+			kfree(kmalloc_ptr);
+		}
+
+		kmalloc_len = 0L;
+		kmalloc_ptr = NULL;
+		kmalloc_area = NULL;
+		kcount--;
+
+		if (isearch != kcount) {
+			kmalloc_drv[isearch].size = kmalloc_drv[kcount].size;
+			kmalloc_drv[isearch].kmallocptr =
+			    kmalloc_drv[kcount].kmallocptr;
+			kmalloc_drv[isearch].kvirtlen =
+			    kmalloc_drv[kcount].kvirtlen;
+			kmalloc_drv[isearch].kvirtadd =
+			    kmalloc_drv[kcount].kvirtadd;
+			kmalloc_drv[isearch].kphysadd =
+			    kmalloc_drv[kcount].kphysadd;
+		}
+
+		kmalloc_drv[kcount].size = 0;
+		kmalloc_drv[kcount].kmallocptr = NULL;
+		kmalloc_drv[kcount].kvirtlen = 0;
+		kmalloc_drv[kcount].kvirtadd = NULL;
+		kmalloc_drv[kcount].kphysadd = NULL;
+	}
+	return 0;
+}
+
 #if defined(HAVE_UNLOCKED_IOCTL)
 long AMI_chrdrv_ioctl(struct file *_unused_file, unsigned int cmd, unsigned long arg)
 #else
@@ -93,127 +209,16 @@ int AMI_chrdrv_ioctl(struct inode *_unused_inode, unsigned int cmd, unsigned lon
 #endif
 {
 	switch (cmd) {
-	case CMD_ALLOC:
-		{
-			unsigned long virt_addr;
-			AMIFL_alloc_params arg_kernel_space;
-
-			if (kcount >= 128) {
-				return -EINVAL;
-			}
-
-			kmalloc_ptr = NULL;
-
-			if (!arg || kmalloc_ptr) {
-				return -EINVAL;
-			}
-
-			copy_from_user((void *) &arg_kernel_space, (void *) arg,
-				       sizeof(AMIFL_alloc_params));
-
-			if (arg_kernel_space.size > 128 * 1024) {
-				return -EINVAL;
-			}
-
-			kmalloc_len = ((arg_kernel_space.size + PAGE_SIZE - 1) & PAGE_MASK);
-			kmalloc_ptr = kmalloc((kmalloc_len + 2 * PAGE_SIZE), GFP_DMA | GFP_KERNEL);
-			kmalloc_area =
-			    (int *) (((unsigned long) kmalloc_ptr + PAGE_SIZE - 1) & PAGE_MASK);
-
-			for (virt_addr = (unsigned long) kmalloc_area;
-			     virt_addr < (unsigned long) kmalloc_area + kmalloc_len;
-			     virt_addr += PAGE_SIZE) {
-				mem_map_reserve(virt_to_page(virt_addr));
-			}
-
-			{
-				int i;
-				for (i = 0; i < (kmalloc_len / sizeof(int)); ++i) {
-					kmalloc_area[i] = 0xAFD00000 + i;
-				}
-			}
-
-			kmalloc_drv[kcount].size = arg_kernel_space.size;
-			kmalloc_drv[kcount].kmallocptr = kmalloc_ptr;
-			kmalloc_drv[kcount].kvirtlen = kmalloc_len;
-			kmalloc_drv[kcount].kvirtadd = kmalloc_area;
-			kmalloc_drv[kcount].kphysadd =
-			    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
-			++kcount;
-
-			arg_kernel_space.kvirtadd = kmalloc_area;
-			arg_kernel_space.kphysadd =
-			    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
-
-			copy_to_user((void *) arg, (void *) &arg_kernel_space,
-				     sizeof(AMIFL_alloc_params));
-
+		case CMD_ALLOC:
+			return AMI_chrdrv_ioctl_alloc(arg);
+		case CMD_FREE:
+			return AMI_chrdrv_ioctl_alloc(arg);
+		case CMD_LOCK_KB:
+			disable_irq(1);
 			return 0;
-		}
-	case CMD_FREE:
-		{
-			unsigned long virt_addr;
-			AMIFL_alloc_params arg_kernel_space;
-			int isearch = 0;
-
-			copy_from_user((void *) &arg_kernel_space, (void *) arg,
-				       sizeof(AMIFL_alloc_params));
-
-			if (kcount > 0) {
-				for (isearch = 0; isearch < kcount; isearch++) {
-					if (kmalloc_drv[isearch].kphysadd ==
-					    arg_kernel_space.kphysadd)
-						break;
-				}
-				if (isearch >= kcount)
-					return 0;
-				kmalloc_ptr = kmalloc_drv[isearch].kmallocptr;
-				kmalloc_area = kmalloc_drv[isearch].kvirtadd;
-				kmalloc_len = kmalloc_drv[isearch].kvirtlen;
-			} else
-				return 0;
-			if (kmalloc_ptr) {
-				for (virt_addr = (unsigned long) kmalloc_area;
-				     virt_addr < (unsigned long) kmalloc_area + kmalloc_len;
-				     virt_addr += PAGE_SIZE) {
-					mem_map_unreserve(virt_to_page(virt_addr));
-				}
-
-				if (kmalloc_ptr) {
-					kfree(kmalloc_ptr);
-				}
-
-				kmalloc_len = 0L;
-				kmalloc_ptr = NULL;
-				kmalloc_area = NULL;
-				kcount--;
-
-				if (isearch != kcount) {
-					kmalloc_drv[isearch].size = kmalloc_drv[kcount].size;
-					kmalloc_drv[isearch].kmallocptr =
-					    kmalloc_drv[kcount].kmallocptr;
-					kmalloc_drv[isearch].kvirtlen =
-					    kmalloc_drv[kcount].kvirtlen;
-					kmalloc_drv[isearch].kvirtadd =
-					    kmalloc_drv[kcount].kvirtadd;
-					kmalloc_drv[isearch].kphysadd =
-					    kmalloc_drv[kcount].kphysadd;
-				}
-
-				kmalloc_drv[kcount].size = 0;
-				kmalloc_drv[kcount].kmallocptr = NULL;
-				kmalloc_drv[kcount].kvirtlen = 0;
-				kmalloc_drv[kcount].kvirtadd = NULL;
-				kmalloc_drv[kcount].kphysadd = NULL;
-			}
+		case CMD_UNLOCK_KB:
+			enable_irq(1);
 			return 0;
-		}
-	case CMD_LOCK_KB:
-		disable_irq(1);
-		return 0;
-	case CMD_UNLOCK_KB:
-		enable_irq(1);
-		return 0;
 	}
 	return -ENOTTY;
 }
