@@ -13,6 +13,7 @@
 #include <linux/fs.h>
 #include <linux/version.h>
 #include <linux/uaccess.h>
+#include <asm/compat.h>
 
 #define LINUX_PRE_2_6   (LINUX_VERSION_CODE <  KERNEL_VERSION(2, 6, 0))
 #define LINUX_POST_2_6  (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0))
@@ -87,9 +88,13 @@ int AMI_chrdrv_release(struct inode *inode, struct file *file)
 	return (0);
 }
 
-int AMI_chrdrv_ioctl_alloc(unsigned long arg) {
+int AMI_chrdrv_ioctl_alloc(AMIFL_alloc_params *arg_kernel_space) {
 	unsigned long virt_addr;
-	AMIFL_alloc_params arg_kernel_space;
+
+	printk(KERN_INFO "%s:%d Size: %ld KVirtlen: %ld kmallocptr %p kvirtaddr %p kphysaddr %p\n", 
+			__FUNCTION__, __LINE__,
+			arg_kernel_space->size, arg_kernel_space->kvirtlen, arg_kernel_space->kmallocptr,
+			arg_kernel_space->kvirtadd, arg_kernel_space->kphysadd);
 
 	if (kcount >= 128) {
 		return -EINVAL;
@@ -97,18 +102,11 @@ int AMI_chrdrv_ioctl_alloc(unsigned long arg) {
 
 	kmalloc_ptr = NULL;
 
-	if (!arg || kmalloc_ptr) {
+	if (arg_kernel_space->size > 128 * 1024) {
 		return -EINVAL;
 	}
 
-	copy_from_user((void *) &arg_kernel_space, (void *) arg,
-		       sizeof(AMIFL_alloc_params));
-
-	if (arg_kernel_space.size > 128 * 1024) {
-		return -EINVAL;
-	}
-
-	kmalloc_len = ((arg_kernel_space.size + PAGE_SIZE - 1) & PAGE_MASK);
+	kmalloc_len = ((arg_kernel_space->size + PAGE_SIZE - 1) & PAGE_MASK);
 	kmalloc_ptr = kmalloc((kmalloc_len + 2 * PAGE_SIZE), GFP_DMA | GFP_KERNEL);
 	kmalloc_area =
 	    (int *) (((unsigned long) kmalloc_ptr + PAGE_SIZE - 1) & PAGE_MASK);
@@ -126,7 +124,7 @@ int AMI_chrdrv_ioctl_alloc(unsigned long arg) {
 		}
 	}
 
-	kmalloc_drv[kcount].size = arg_kernel_space.size;
+	kmalloc_drv[kcount].size = arg_kernel_space->size;
 	kmalloc_drv[kcount].kmallocptr = kmalloc_ptr;
 	kmalloc_drv[kcount].kvirtlen = kmalloc_len;
 	kmalloc_drv[kcount].kvirtadd = kmalloc_area;
@@ -134,28 +132,26 @@ int AMI_chrdrv_ioctl_alloc(unsigned long arg) {
 	    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
 	++kcount;
 
-	arg_kernel_space.kvirtadd = kmalloc_area;
-	arg_kernel_space.kphysadd =
+	arg_kernel_space->kvirtadd = kmalloc_area;
+	arg_kernel_space->kphysadd =
 	    (void *) ((unsigned long) virt_to_phys(kmalloc_area));
-
-	copy_to_user((void *) arg, (void *) &arg_kernel_space,
-		     sizeof(AMIFL_alloc_params));
 
 	return 0;
 }
 
-int AMI_chrdrv_ioctl_free(unsigned long arg) {
+int AMI_chrdrv_ioctl_free(AMIFL_alloc_params *arg_kernel_space) {
 	unsigned long virt_addr;
-	AMIFL_alloc_params arg_kernel_space;
 	int isearch = 0;
 
-	copy_from_user((void *) &arg_kernel_space, (void *) arg,
-		       sizeof(AMIFL_alloc_params));
+	printk(KERN_INFO "%s:%d Size: %ld KVirtlen: %ld kmallocptr %p kvirtaddr %p kphysaddr %p\n", 
+			__FUNCTION__, __LINE__,
+			arg_kernel_space->size, arg_kernel_space->kvirtlen, arg_kernel_space->kmallocptr,
+			arg_kernel_space->kvirtadd, arg_kernel_space->kphysadd);
 
 	if (kcount > 0) {
 		for (isearch = 0; isearch < kcount; isearch++) {
 			if (kmalloc_drv[isearch].kphysadd ==
-			    arg_kernel_space.kphysadd)
+			    arg_kernel_space->kphysadd)
 				break;
 		}
 		if (isearch >= kcount)
@@ -202,6 +198,91 @@ int AMI_chrdrv_ioctl_free(unsigned long arg) {
 	return 0;
 }
 
+typedef struct _struct_compat_AMIFL_alloc_params {
+	u32 size;
+	u32 kvirtlen;
+	u32 kmallocptr;
+	u32 kvirtadd;
+	u32 kphysadd;
+} compat_AMIFL_alloc_params;
+
+void AMI_read_compat_alloc_params(AMIFL_alloc_params *amifl, unsigned long arg) {
+	compat_AMIFL_alloc_params	amiflcompat;
+	int				rc;
+
+	rc=copy_from_user((void *) &amiflcompat, (void *) arg,
+		       sizeof(compat_AMIFL_alloc_params));
+
+	amifl->size=amiflcompat.size;
+	amifl->kvirtlen=amiflcompat.kvirtlen;
+	amifl->kmallocptr=compat_ptr(amiflcompat.kmallocptr);
+	amifl->kvirtadd=compat_ptr(amiflcompat.kvirtadd);
+	amifl->kphysadd=compat_ptr(amiflcompat.kphysadd);
+
+	printk(KERN_INFO "%s:%d Size: %ld KVirtlen: %ld kmallocptr %p kvirtaddr %p kphysaddr %p\n", 
+			__FUNCTION__, __LINE__, amifl->size, amifl->kvirtlen, amifl->kmallocptr, amifl->kvirtadd, amifl->kphysadd);
+}
+
+void AMI_write_compat_alloc_params(AMIFL_alloc_params *amifl, unsigned long arg) {
+	compat_AMIFL_alloc_params	amiflcompat;
+	int				rc;
+
+	printk(KERN_INFO "%s:%d Size: %ld KVirtlen: %ld kmallocptr %p kvirtaddr %p kphysaddr %p\n", 
+			__FUNCTION__, __LINE__, amifl->size, amifl->kvirtlen, amifl->kmallocptr, amifl->kvirtadd, amifl->kphysadd);
+
+	amiflcompat.size=amifl->size;
+	amiflcompat.kvirtlen=amifl->kvirtlen;
+	amiflcompat.kmallocptr=ptr_to_compat(amifl->kmallocptr);
+	amiflcompat.kvirtadd=ptr_to_compat(amifl->kvirtadd);
+	amiflcompat.kphysadd=ptr_to_compat(amifl->kphysadd);
+
+	rc=copy_to_user((void *) arg, (void *) &amiflcompat,
+		     sizeof(compat_AMIFL_alloc_params));
+}
+
+
+long AMI_chrdrv_compat_ioctl(struct file *_unused_file, unsigned int cmd, unsigned long arg) {
+	switch (cmd) {
+		case CMD_ALLOC: {
+			AMIFL_alloc_params arg_kernel_space;
+			int rc;
+
+			if (!arg || kmalloc_ptr) {
+				return -EINVAL;
+			}
+
+			AMI_read_compat_alloc_params(&arg_kernel_space, arg);
+
+			rc=AMI_chrdrv_ioctl_alloc(&arg_kernel_space);
+
+			if (rc)
+				return rc;
+
+			rc=copy_to_user((void *) arg, (void *) &arg_kernel_space,
+				     sizeof(AMIFL_alloc_params));
+
+			return 0;
+		}
+		case CMD_FREE: {
+			AMIFL_alloc_params arg_kernel_space;
+			if (!arg)
+				return -EINVAL;
+
+			copy_from_user((void *) &arg_kernel_space, (void *) arg,
+				       sizeof(AMIFL_alloc_params));
+
+			return AMI_chrdrv_ioctl_free(&arg_kernel_space);
+		}
+		case CMD_LOCK_KB:
+			disable_irq(1);
+			return 0;
+		case CMD_UNLOCK_KB:
+			enable_irq(1);
+			return 0;
+	}
+	return -ENOTTY;
+}
+
 #if defined(HAVE_UNLOCKED_IOCTL)
 long AMI_chrdrv_ioctl(struct file *_unused_file, unsigned int cmd, unsigned long arg)
 #else
@@ -209,10 +290,37 @@ int AMI_chrdrv_ioctl(struct inode *_unused_inode, unsigned int cmd, unsigned lon
 #endif
 {
 	switch (cmd) {
-		case CMD_ALLOC:
-			return AMI_chrdrv_ioctl_alloc(arg);
-		case CMD_FREE:
-			return AMI_chrdrv_ioctl_alloc(arg);
+		case CMD_ALLOC: {
+			AMIFL_alloc_params arg_kernel_space;
+			int rc;
+
+			if (!arg || kmalloc_ptr) {
+				return -EINVAL;
+			}
+
+			copy_from_user((void *) &arg_kernel_space, (void *) arg,
+				       sizeof(AMIFL_alloc_params));
+
+			rc=AMI_chrdrv_ioctl_alloc(&arg_kernel_space);
+
+			if (rc)
+				return rc;
+
+			copy_to_user((void *) arg, (void *) &arg_kernel_space,
+				     sizeof(AMIFL_alloc_params));
+
+			return 0;
+		}
+		case CMD_FREE: {
+			AMIFL_alloc_params arg_kernel_space;
+			if (!arg)
+				return -EINVAL;
+
+			copy_from_user((void *) &arg_kernel_space, (void *) arg,
+				       sizeof(AMIFL_alloc_params));
+
+			return AMI_chrdrv_ioctl_free(&arg_kernel_space);
+		}
 		case CMD_LOCK_KB:
 			disable_irq(1);
 			return 0;
@@ -246,8 +354,12 @@ int AMI_chrdrv_mmap(struct file *file, struct vm_area_struct *vma)
 
 	vma->vm_flags |= VM_LOCKED;
 
+	printk(KERN_INFO "%s:%d Kmalloc area %p\n",
+			__FUNCTION__, __LINE__, kmalloc_area);
+
 	{
 		unsigned long pfn = virt_to_phys((void *) ((unsigned long) kmalloc_area));
+
 
 #if LINUX_POST_2_6
 		int remap_result = remap_pfn_range(vma,
@@ -278,11 +390,12 @@ int AMI_chrdrv_mmap(struct file *file, struct vm_area_struct *vma)
 #endif
 
 struct file_operations AMI_chrdrv_fops = {
-      owner:THIS_MODULE,
-      open:AMI_chrdrv_open,
-      release:AMI_chrdrv_release,
-      mmap:AMI_chrdrv_mmap,
-      $IOCTL_FIELD:AMI_chrdrv_ioctl,
+      owner:		THIS_MODULE,
+      open:		AMI_chrdrv_open,
+      release:		AMI_chrdrv_release,
+      mmap:		AMI_chrdrv_mmap,
+      $IOCTL_FIELD:	AMI_chrdrv_ioctl,
+      compat_ioctl:	AMI_chrdrv_compat_ioctl,
 };
 
 /*
