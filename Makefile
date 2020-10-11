@@ -5,7 +5,7 @@ EXTRA_CFLAGS := -Wall -Wstrict-prototypes -O2 -fno-strict-aliasing
 obj-m			+=	amifldrv_mod.o
 amifldrv_mod-objs	:=	amifldrv.o
 default:
-	make -C $(KERNEL) M=$(PWD) modules
+	make -C $(KERNEL) M=$(shell pwd) modules
 	rm -f amifldrv.o_shipped
 	mv amifldrv.o amifldrv.o_shipped
 	rm -f amifldrv_mod.o
