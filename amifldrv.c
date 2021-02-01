@@ -13,7 +13,7 @@
 #include <linux/fs.h>
 #include <linux/version.h>
 #include <linux/uaccess.h>
-#include <asm/compat.h>
+#include <linux/compat.h>
 
 #define LINUX_PRE_2_6   (LINUX_VERSION_CODE <  KERNEL_VERSION(2, 6, 0))
 #define LINUX_POST_2_6  (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 0))
@@ -29,6 +29,8 @@
 #define CMD_FREE        0x4161
 #define CMD_LOCK_KB     0x4162
 #define CMD_UNLOCK_KB   0x4163
+
+#define HAVE_UNLOCKED_IOCTL 1
 
 /*
  * ioctl data packet used to communicate instructions to the driver
