@@ -354,7 +354,7 @@ int AMI_chrdrv_mmap(struct file *file, struct vm_area_struct *vma)
 		return (-EINVAL);
 	}
 
-	vma->vm_flags |= VM_LOCKED;
+	vm_flags_set(vma,VM_LOCKED);
 
 	printk(KERN_INFO "%s:%d Kmalloc area %p\n",
 			__FUNCTION__, __LINE__, kmalloc_area);
